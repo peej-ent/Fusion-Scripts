@@ -1,4 +1,5 @@
 -- rename_inputs.lua
+-- Specifically for renaming inputs on .setting nodes you have made into macros
 -- Renames keys in `Inputs = ordered() { ... }` to the string found in each entry's `Source = "..."`.
 -- Preserves bodies exactly; sanitizes names; dedupes collisions with _2, _3, ...
 
@@ -177,3 +178,4 @@ end
 if fusion and fusion:GetResolve() then
   fusion:Print("[rename_inputs] Done: " .. out_path)
 end
+
