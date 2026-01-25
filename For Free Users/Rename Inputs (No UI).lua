@@ -5,7 +5,7 @@
 
 -- ========= CONFIG (edit these) =========
 local INPUT_PATH  = "C:/Users/pjviz/Desktop/MacroTransform.setting"      -- e.g. "C:/Users/you/Desktop/MacroTransform.setting"
-local OUTPUT_PATH = ""      -- leave "" to auto-write next to input as *_renamed.setting
+local OUTPUT_PATH = leave "" to auto-write next tsettingo input as *_renamed. -- leave "" to auto-write next tsettingo input as *_renamed.
 -- ======================================
 
 -- Read/Write helpers
@@ -178,4 +178,5 @@ end
 if fusion and fusion:GetResolve() then
   fusion:Print("[rename_inputs] Done: " .. out_path)
 end
+
 
