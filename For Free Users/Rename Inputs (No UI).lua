@@ -4,7 +4,7 @@
 -- Preserves bodies exactly; sanitizes names; dedupes collisions with _2, _3, ...
 
 -- ========= CONFIG (edit these) =========
-local INPUT_PATH  = "C:/Users/pjviz/Desktop/MacroTransform.setting"      -- e.g. "C:/Users/you/Desktop/MacroTransform.setting"
+local INPUT_PATH  = "C:/Users/Ashwin/Desktop/MacroTransform.setting"      -- e.g. "C:/Users/you/Desktop/MacroTransform.setting"
 local OUTPUT_PATH = ""      -- leave "" to auto-write next to input as *_renamed.setting
 -- ======================================
 
@@ -178,4 +178,5 @@ end
 if fusion and fusion:GetResolve() then
   fusion:Print("[rename_inputs] Done: " .. out_path)
 end
+
 
