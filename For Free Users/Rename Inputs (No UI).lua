@@ -1,181 +1,241 @@
--- rename_inputs.lua
--- Specifically for renaming inputs on .setting nodes you have made into macros
--- Renames keys in `Inputs = ordered() { ... }` to the string found in each entry's `Source = "..."`.
--- Preserves bodies exactly; sanitizes names; dedupes collisions with _2, _3, ...
+-- Rename Inputs (Selected Node).lua
+-- Renames Input keys to match their Source values in a selected Macro/Group node
+-- Special case: Source = "Input" becomes "MainInput1", "MainInput2", etc.
+-- Runs immediately without UI when executed
 
--- ========= CONFIG (edit these) =========
-local INPUT_PATH  = "C:/Users/pjviz/Desktop/MacroTransform.setting"      -- e.g. "C:/Users/you/Desktop/MacroTransform.setting"
-local OUTPUT_PATH = ""      -- leave "" to auto-write next to input as *_renamed.setting
--- ======================================
+--------------------------------
+-- ENGINE: RenameSelected() ----
+--------------------------------
+local function RenameSelected()
+  
+  -- ===== Utility Functions =====
+  local function sanitize_name(s)
+    s = s:gsub("[^%w_]", "_")
+    if not s:match("^[A-Za-z_]") then s = "_" .. s end
+    return s
+  end
 
--- Read/Write helpers
-local function read_file(p)
-  local f, err = io.open(p, "rb"); if not f then return nil, err end
-  local s = f:read("*a"); f:close(); return s
-end
-local function write_file(p, s)
-  local f, err = io.open(p, "wb"); if not f then return nil, err end
-  f:write(s); f:close(); return true
-end
+  local function find_matching_brace(s, open_pos)
+    local depth, i, in_str, esc = 0, open_pos, false, false
+    while i <= #s do
+      local c = s:sub(i,i)
+      if in_str then
+        if esc then esc = false
+        elseif c == "\\" then esc = true
+        elseif c == '"' then in_str = false end
+      else
+        if c == '"' then in_str = true
+        elseif c == '{' then depth = depth + 1
+        elseif c == '}' then
+          depth = depth - 1
+          if depth == 0 then return i end
+        end
+      end
+      i = i + 1
+    end
+    return nil
+  end
 
--- Utilities
-local function sanitize_name(s)
-  s = s:gsub("[^%w_]", "_")
-  if not s:match("^[A-Za-z_]") then s = "_" .. s end
-  return s
-end
+  local function replace_range(s, s1, s2, rep)
+    return s:sub(1, s1 - 1) .. rep .. s:sub(s2 + 1)
+  end
 
-local function find_matching_brace(s, open_pos)
-  local depth, i, in_str, esc = 0, open_pos, false, false
-  while i <= #s do
-    local c = s:sub(i,i)
-    if in_str then
-      if esc then esc = false
-      elseif c == "\\" then esc = true
-      elseif c == '"' then in_str = false end
-    else
-      if c == '"' then in_str = true
-      elseif c == '{' then depth = depth + 1
-      elseif c == '}' then
-        depth = depth - 1
-        if depth == 0 then return i end
+  -- ===== Core: Rename keys within Inputs block =====
+  local function rename_inputs_block(text)
+    local hdr_s, hdr_e = text:find("Inputs%s*=%s*ordered%(%s*%)%s*{")
+    if not hdr_s then return nil, "Could not find 'Inputs = ordered() {' block." end
+
+    local open_brace = text:find("{", hdr_e - 1)
+    if not open_brace then return nil, "Malformed Inputs block (no '{')." end
+    local close_brace = find_matching_brace(text, open_brace)
+    if not close_brace then return nil, "Malformed Inputs block (no matching '}')." end
+
+    local inner_start = open_brace + 1
+    local inner_end   = close_brace
+    local inner = text:sub(inner_start, inner_end)
+
+    -- Parse top-level entries:  Key = <Type> { ... }
+    local i = 1
+    local entries = {}
+    while i <= #inner do
+      -- skip whitespace/commas/newlines
+      while i <= #inner and inner:sub(i,i):match("[,%s]") do i = i + 1 end
+      if i > #inner then break end
+
+      -- key (identifier)
+      local k_s = i
+      if not inner:sub(i,i):match("[%a_]") then
+        local nl = inner:find("\n", i) or (#inner + 1)
+        i = nl + 1
+        goto continue
+      end
+      while i <= #inner and inner:sub(i,i):match("[%w_]") do i = i + 1 end
+      local k_e = i - 1
+      local key = inner:sub(k_s, k_e)
+
+      -- spaces, expect '='
+      while i <= #inner and inner:sub(i,i):match("[%s]") do i = i + 1 end
+      if inner:sub(i,i) ~= "=" then
+        local nl = inner:find("\n", i) or (#inner + 1)
+        i = nl + 1
+        goto continue
+      end
+      i = i + 1
+      while i <= #inner and inner:sub(i,i):match("[%s]") do i = i + 1 end
+
+      -- find body braces
+      local b_open = inner:find("{", i)
+      if not b_open then break end
+      local b_close = find_matching_brace(inner, b_open)
+      if not b_close then break end
+
+      local body = inner:sub(b_open, b_close)
+      local src_raw = body:match('Source%s*=%s*"([^"]+)"') or key
+      
+      -- Special case: if Source is exactly "Input", use "MainInput" as base
+      local new_name
+      if src_raw == "Input" then
+        new_name = "MainInput"
+      else
+        new_name = sanitize_name(src_raw)
+      end
+
+      table.insert(entries, {
+        key = key, k_s = k_s, k_e = k_e,
+        source_raw = src_raw, new_name = new_name
+      })
+
+      i = b_close + 1
+      ::continue::
+    end
+
+    -- Ensure unique names with numbering
+    local seen = {}
+    for _, e in ipairs(entries) do
+      local base = e.new_name
+      if not seen[base] then
+        seen[base] = 1
+        -- For MainInput, always add the number suffix
+        if base == "MainInput" then
+          e.final_name = base .. "1"
+        else
+          e.final_name = base
+        end
+      else
+        seen[base] = seen[base] + 1
+        -- For MainInput and others, use number suffix
+        if base == "MainInput" then
+          e.final_name = base .. seen[base]
+        else
+          e.final_name = string.format("%s_%d", base, seen[base])
+        end
       end
     end
-    i = i + 1
-  end
-  return nil
-end
 
-local function replace_range(s, s1, s2, rep)
-  return s:sub(1, s1 - 1) .. rep .. s:sub(s2 + 1)
-end
-
--- Core: rename keys within a specific ordered() block (here: "Inputs")
-local function rename_block(text, block_name)
-  local hdr_s, hdr_e = text:find(block_name .. "%s*=%s*ordered%(%s*%)%s*{")
-  if not hdr_s then return nil, "Could not find '" .. block_name .. " = ordered() {' block." end
-
-  local open_brace = text:find("{", hdr_e - 1)
-  if not open_brace then return nil, "Malformed " .. block_name .. " block (no '{')." end
-  local close_brace = find_matching_brace(text, open_brace)
-  if not close_brace then return nil, "Malformed " .. block_name .. " block (no matching '}')." end
-
-  local inner_start = open_brace + 1
-  local inner_end   = close_brace
-  local inner = text:sub(inner_start, inner_end)
-
-  -- Parse top-level entries:  Key = <Type> { ... }
-  local i = 1
-  local entries = {}  -- { key, k_s, k_e, source_raw, new_name, final_name }
-  while i <= #inner do
-    -- skip whitespace/commas/newlines
-    while i <= #inner and inner:sub(i,i):match("[,%s]") do i = i + 1 end
-    if i > #inner then break end
-
-    -- key (identifier)
-    local k_s = i
-    if not inner:sub(i,i):match("[%a_]") then
-      local nl = inner:find("\n", i) or (#inner + 1)
-      i = nl + 1
-      goto continue
+    -- Replace keys from right to left so indices stay valid
+    table.sort(entries, function(a,b) return a.k_s > b.k_s end)
+    local new_inner = inner
+    for _, e in ipairs(entries) do
+      new_inner = replace_range(new_inner, e.k_s, e.k_e, e.final_name)
     end
-    while i <= #inner and inner:sub(i,i):match("[%w_]") do i = i + 1 end
-    local k_e = i - 1
-    local key = inner:sub(k_s, k_e)
 
-    -- spaces, expect '='
-    while i <= #inner and inner:sub(i,i):match("[%s]") do i = i + 1 end
-    if inner:sub(i,i) ~= "=" then
-      local nl = inner:find("\n", i) or (#inner + 1)
-      i = nl + 1
-      goto continue
-    end
-    i = i + 1
-    while i <= #inner and inner:sub(i,i):match("[%s]") do i = i + 1 end
-
-    -- find body braces
-    local b_open = inner:find("{", i)
-    if not b_open then break end
-    local b_close = find_matching_brace(inner, b_open)
-    if not b_close then break end
-
-    local body = inner:sub(b_open, b_close)
-    local src_raw = body:match('Source%s*=%s*"([^"]+)"') or key
-    local new_name = sanitize_name(src_raw)
-
-    table.insert(entries, {
-      key = key, k_s = k_s, k_e = k_e,
-      source_raw = src_raw, new_name = new_name
-    })
-
-    i = b_close + 1
-    ::continue::
+    local new_text = text:sub(1, inner_start - 1) .. new_inner .. text:sub(inner_end + 1)
+    return new_text, entries
   end
 
-  -- Ensure unique names
-  local seen = {}
-  for _, e in ipairs(entries) do
-    local base = e.new_name
-    if not seen[base] then
-      seen[base] = 1
-      e.final_name = base
-    else
-      seen[base] = seen[base] + 1
-      e.final_name = string.format("%s_%d", base, seen[base])
+  -- ===== Get selected tool and copy to text =====
+  local comp = comp
+  if not comp then return false, "No comp found." end
+  local tool = comp.ActiveTool
+  if not tool then return false, "Select a MacroOperator or GroupOperator node first." end
+
+  local attrs = tool:GetAttrs() or {}
+  local regID = attrs.TOOLS_RegID
+  if regID ~= "MacroOperator" and regID ~= "GroupOperator" then
+    return false, "Selected node must be MacroOperator or GroupOperator."
+  end
+
+  -- Remember position and connections to restore
+  local function getPrevConnectedTool(t)
+    if not t then return nil end
+    local inp = t:FindMainInput(1); if not inp then return nil end
+    local outp = inp:GetConnectedOutput(); if not outp then return nil end
+    return outp:GetTool()
+  end
+  local function getNextConnectedTool(t)
+    if not t then return nil end
+    local outp = t:FindMainOutput(1); if not outp then return nil end
+    local conns = outp:GetConnectedInputs() or {}
+    for _, inp in pairs(conns) do return inp:GetTool() end
+    return nil
+  end
+
+  local prevConnectedTool = getPrevConnectedTool(tool)
+  local nextConnectedTool = getNextConnectedTool(tool)
+  local px, py = nil, nil
+  if tool.GetPos then local p = tool:GetPos(); if p then px, py = p[1], p[2] end end
+
+  comp:Copy(tool)
+  local txt = bmd.getclipboard()
+  if not txt or #txt == 0 then return false, "Clipboard empty after Copy()." end
+
+  -- ===== Parse/modify the copied text =====
+  local new_txt, entries_or_err = rename_inputs_block(txt)
+  if not new_txt then
+    return false, tostring(entries_or_err)
+  end
+
+  -- Build summary message
+  local msg = "Renamed " .. #entries_or_err .. " input(s)"
+  local details = {}
+  for _, e in ipairs(entries_or_err) do
+    if e.key ~= e.final_name then
+      table.insert(details, e.key .. " → " .. e.final_name)
     end
   end
-
-  -- Replace keys from right to left so indices stay valid
-  table.sort(entries, function(a,b) return a.k_s > b.k_s end)
-  local new_inner = inner
-  for _, e in ipairs(entries) do
-    new_inner = replace_range(new_inner, e.k_s, e.k_e, e.final_name)
+  if #details > 0 then
+    msg = msg .. ": " .. table.concat(details, ", ")
   end
 
-  local new_text = text:sub(1, inner_start - 1) .. new_inner .. text:sub(inner_end + 1)
-  return new_text, entries
+  -- ===== Replace selected tool with modified text, keep wiring/pos =====
+  comp:StartUndo("Rename Inputs (Selected Node)")
+  comp:Lock()
+  local ok, err = pcall(function()
+    tool:Delete()
+    bmd.setclipboard(new_txt)
+    comp:SetActiveTool()
+    comp:Paste()
+    local newTool = comp.ActiveTool
+    if not newTool then error("Paste failed") end
+
+    -- restore position
+    if newTool.SetPos and px and py then newTool:SetPos(px, py) end
+
+    -- reconnect forward
+    if nextConnectedTool then
+      local o = newTool:FindMainOutput(1)
+      local i = nextConnectedTool:FindMainInput(1)
+      if o and i then i:ConnectTo(o) end
+    end
+    -- reconnect backward
+    if prevConnectedTool then
+      local o = prevConnectedTool:FindMainOutput(1)
+      local i = newTool:FindMainInput(1)
+      if o and i then i:ConnectTo(o) end
+    end
+
+    if newTool.SetPos and px and py then newTool:SetPos(px, py) end
+  end)
+  comp:Unlock()
+  comp:EndUndo(not ok)
+  if not ok then return false, err end
+  return true, msg
 end
 
--- Resolve input/output paths
-local in_path = INPUT_PATH
-if in_path == "" then
-  if arg and arg[1] and arg[1] ~= "" then
-    in_path = arg[1]
-  elseif fusion and fusion.RequestFile then
-    in_path = fusion:RequestFile("Select a .setting file", "*.setting")
-  end
+-- Run immediately
+local ok, msg = RenameSelected()
+if ok then
+  print("[Rename Inputs] ✅ " .. msg)
+else
+  print("[Rename Inputs] ❌ " .. msg)
 end
-if not in_path or in_path == "" then
-  print("[rename_inputs] No input path provided.")
-  return
-end
-
-local txt, rerr = read_file(in_path)
-if not txt then
-  print("[rename_inputs] Read failed:", rerr)
-  return
-end
-
-local new_txt, entries_or_err = rename_block(txt, "Inputs")
-if not new_txt then
-  print("[rename_inputs] Error:", entries_or_err)
-  return
-end
-
-local out_path = OUTPUT_PATH ~= "" and OUTPUT_PATH or (in_path:gsub("%.setting$", "") .. "_renamed.setting")
-local ok, werr = write_file(out_path, new_txt)
-if not ok then
-  print("[rename_inputs] Write failed:", werr)
-  return
-end
-
-print("[rename_inputs] Wrote:", out_path)
-print("[rename_inputs] Renamed keys (Old -> New):")
-for _, e in ipairs(entries_or_err) do
-  print(string.format("  %s -> %s   [Source=\"%s\"]", e.key, e.final_name, e.source_raw))
-end
-
-if fusion and fusion:GetResolve() then
-  fusion:Print("[rename_inputs] Done: " .. out_path)
-end
-
