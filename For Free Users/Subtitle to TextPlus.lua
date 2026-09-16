@@ -1,13 +1,6 @@
 -- Transfers each item on a chosen subtitle track onto its own Text+ clip
--- (duplicated from a Media Pool template) on a brand new video track at the
--- top of the timeline. One Text+ per subtitle line.
---
--- The Text+ template is taken from whatever clip is under the timeline
--- playhead when you run the script: the script reads that clip's name and
--- looks for a Media Pool bin item with the same name. Park the playhead
--- over an instance of your styled Text+ template clip, make sure a bin item
--- with that same name exists somewhere in your Media Pool (drag it in there
--- once if it doesn't yet), then run.
+-- (duplicated from a bin template) on a brand new video track at the top
+-- of the timeline. One Text+ per subtitle line.
 
 local resolve = app:GetResolve()
 local project = resolve:GetProjectManager():GetCurrentProject()
@@ -48,7 +41,33 @@ if not timeline then
 end
 
 --------------------------------------------------------------------------------
--- 0) Figure out which subtitle tracks exist, for the dropdown below
+-- 0) Settings persistence (remembers the last template name you typed)
+--------------------------------------------------------------------------------
+
+local function getSettingsPath()
+    local sep = package.config:sub(1, 1)
+    local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
+    return home .. sep .. ".resolve_subtitle_to_textplus_settings.txt"
+end
+
+local function loadLastTemplateName()
+    local f = io.open(getSettingsPath(), "r")
+    if not f then return "" end
+    local name = f:read("*l") or ""
+    f:close()
+    return name
+end
+
+local function saveLastTemplateName(name)
+    local f = io.open(getSettingsPath(), "w")
+    if f then
+        f:write(name)
+        f:close()
+    end
+end
+
+--------------------------------------------------------------------------------
+-- 0.5) Figure out which subtitle tracks exist, for the dropdown below
 --------------------------------------------------------------------------------
 
 local subCount = timeline:GetTrackCount("subtitle")
@@ -62,10 +81,13 @@ for i = 1, subCount do
 end
 
 --------------------------------------------------------------------------------
--- 0.5) AskUser dialog: which subtitle track, and gap-closing option
+-- 0.75) AskUser dialog: template name, subtitle track, gap-closing option
 --------------------------------------------------------------------------------
 
+local lastName = loadLastTemplateName()
+
 local fields = {
+    {"TemplateName", "Text", Default = lastName, Lines = 1},
     {"SubtitleTrack", "Dropdown", Name = "Subtitle Track", Options = subtitleTrackOptions, Default = 0},
     {"CloseGaps", "Checkbox", Default = 0},
 }
@@ -76,12 +98,17 @@ if not itm then
     os.exit()
 end
 
+local TEMPLATE_NAME = itm.TemplateName
 local SUBTITLE_TRACK_INDEX = itm.SubtitleTrack + 1  -- Dropdown options are 0-indexed
 local CLOSE_GAPS = itm.CloseGaps == 1
 
+if not TEMPLATE_NAME or TEMPLATE_NAME == "" then
+    fail("Cancelled (no template name given).")
+end
+saveLastTemplateName(TEMPLATE_NAME)
+
 --------------------------------------------------------------------------------
--- 1) Get the Text+ template: read the playhead clip's name, then find a
---    Media Pool bin item with that same name (recursive folder search)
+-- 1) Find the template clip in the Media Pool (recursive folder search)
 --------------------------------------------------------------------------------
 
 local function findClipByName(folder, targetName)
@@ -99,22 +126,10 @@ local function findClipByName(folder, targetName)
     return nil
 end
 
-local playheadItem = timeline:GetCurrentVideoItem()
-if not playheadItem then
-    fail("No clip found under the playhead. Park the playhead over your Text+ template clip on the timeline and try again.")
-end
-
-local playheadName = playheadItem:GetName()
-
-local templateClip = findClipByName(mediaPool:GetRootFolder(), playheadName)
+local templateClip = findClipByName(mediaPool:GetRootFolder(), TEMPLATE_NAME)
 if not templateClip then
-    fail(string.format(
-        "The clip under the playhead is named '%s', but no Media Pool bin item with that exact name was found.\n\n" ..
-        "Drag that Text+ clip into a Media Pool bin (it needs to match the timeline clip's name exactly) and try again.",
-        playheadName))
+    fail(string.format("No bin item named '%s' found.", TEMPLATE_NAME))
 end
-
-print(string.format("Using Media Pool item '%s' as the Text+ template.", templateClip:GetName()))
 
 --------------------------------------------------------------------------------
 -- 2) Read the subtitle items we're transferring
