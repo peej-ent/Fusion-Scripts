@@ -84,10 +84,10 @@ end
 -- 0.75) AskUser dialog: template name, subtitle track, gap-closing option
 --------------------------------------------------------------------------------
 
-local lastName = loadLastTemplateName()
+--local lastName = loadLastTemplateName()
 
 local fields = {
-    {"TemplateName", "Text", Default = lastName, Lines = 1},
+    {"TemplateName", "Text", Default = "", Lines = 1},
     {"SubtitleTrack", "Dropdown", Name = "Subtitle Track", Options = subtitleTrackOptions, Default = 0},
     {"CloseGaps", "Checkbox", Default = 0},
 }
@@ -105,7 +105,7 @@ local CLOSE_GAPS = itm.CloseGaps == 1
 if not TEMPLATE_NAME or TEMPLATE_NAME == "" then
     fail("Cancelled (no template name given).")
 end
-saveLastTemplateName(TEMPLATE_NAME)
+--saveLastTemplateName(TEMPLATE_NAME)
 
 --------------------------------------------------------------------------------
 -- 1) Find the template clip in the Media Pool (recursive folder search)
