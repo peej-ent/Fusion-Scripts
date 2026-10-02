@@ -1,0 +1,147 @@
+FuRegisterClass("pj_Inertia", CT_Modifier, {
+    REGS_Name          = "pj_Inertia",
+    REGS_Category      = "Modifiers",
+    REGS_OpDescription = "Live inertia / elastic overshoot for any keyframed number. Keyframe 'Animation'.",
+    REG_Fuse_NoEdit    = true,    -- hides the Edit button
+    REG_Fuse_NoReload  = true,    -- hides the Reload button
+    REG_TimeVariant    = true,    -- output depends on other frames, so never cache it across time
+    REGID_DataType     = "Number",
+    REGID_InputDataType = "Number",
+})
+
+local MAX_TAPS  = 300
+local MAX_CACHE = 4000
+
+function Create()
+    -- per-instance cache of sampled Animation values, keyed by frame
+    Cache      = {}
+    CacheCount = 0
+
+    InLabel = self:AddInput("Label Input", "LabelInput", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "ButtonControl",
+        INP_DoNotifyChanged = false,
+        ICD_Width = .5,
+        BTNCS_Execute = [==[
+local m = self:GetTool()
+local name = m:GetAttrs().TOOLS_Name
+local base = name:match("^%a+%d+") or name
+for _, inp in pairs(m.Output:GetConnectedInputs()) do
+    local label = inp:GetAttrs().INPS_Name:gsub("[^%w_]", "_")
+    m:SetAttrs({ TOOLS_Name = base .. "_" .. label })
+    break
+end
+]==],
+    })
+    InEnable = self:AddInput("Inertia On", "InertiaOn", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "CheckboxControl",
+        INP_Default        = 1,
+        ICD_Width = .5,
+    })
+    
+    InAnim = self:AddInput("Animation", "Animation", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_External       = true,
+        LINK_Main          = 1,   -- lets Modify With capture the input's existing keyframes
+        INP_Default        = 0,
+    })
+
+    InAmp = self:AddInput("Amplitude", "Amplitude", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_MinAllowed     = -10,
+        INP_MaxScale       = 1,
+        INP_Default        = 0.25,
+    })
+    InFreq = self:AddInput("Frequency", "Frequency", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_MinAllowed     = 0,
+        INP_MaxScale       = 12,
+        INP_Default        = 3,
+    })
+    InDecay = self:AddInput("Decay", "Decay", {
+        LINKID_DataType    = "Number",
+        INPID_InputControl = "SliderControl",
+        INP_MinAllowed     = 0.01,
+        INP_MaxScale       = 12,
+        INP_Default        = 4,
+    })
+
+    OutValue = self:AddOutput("Output", "Output", {
+        LINKID_DataType = "Number",
+        LINK_Main       = 1,
+    })
+end
+
+local function ClearCache()
+    Cache      = {}
+    CacheCount = 0
+end
+
+-- Toggling Inertia On/Off also acts as a manual cache reset
+function NotifyChanged(inp, param, time)
+    if inp == InEnable then ClearCache() end
+end
+
+function Process(req)
+    local t = req.Time
+
+    -- Inertia Off: pass the keyframed animation straight through
+    if InEnable:GetValue(req).Value < 0.5 then
+        OutValue:Set(req, Number(InAnim:GetValue(req).Value))
+        return
+    end
+
+    local amp   = InAmp:GetValue(req).Value
+    local freq  = InFreq:GetValue(req).Value
+    local decay = math.max(InDecay:GetValue(req).Value, 0.01)
+
+    local fps = self.Comp:GetPrefs("Comp.FrameFormat.Rate")
+
+    -- taps needed until the wobble has decayed to ~1%
+    local N = math.min(MAX_TAPS, math.ceil((4.6 / decay) * fps))
+
+    local flags = req:GetFlags()
+
+    -- Validate the cache: re-read two past frames and compare. If the keyframes were
+    -- edited, they won't match and the cache is rebuilt.
+    local mid = math.floor(N / 2)
+    for _, i in ipairs({1, mid}) do
+        local c = Cache[t - i]
+        if c ~= nil then
+            local v = InAnim:GetSource(t - i, flags).Value
+            if math.abs(v - c) > 1e-9 then
+                ClearCache()
+                break
+            end
+        end
+    end
+    if CacheCount > MAX_CACHE then ClearCache() end
+
+    -- current frame is always read fresh; past frames come from the cache when possible
+    local x = {}
+    x[0] = InAnim:GetValue(req).Value
+    Cache[t] = x[0]
+    for i = 1, N do
+        local ft = t - i
+        local v = Cache[ft]
+        if v == nil then
+            v = InAnim:GetSource(ft, flags).Value
+            Cache[ft] = v
+            CacheCount = CacheCount + 1
+        end
+        x[i] = v
+    end
+
+    -- each frame-to-frame change adds its own decaying sine
+    local sum = 0
+    for i = 0, N - 1 do
+        local s = (i + 0.5) / fps
+        sum = sum + math.exp(-decay * s) * math.sin(2 * math.pi * freq * s) * (x[i] - x[i + 1])
+    end
+
+    OutValue:Set(req, Number(x[0] + amp * sum))
+end
